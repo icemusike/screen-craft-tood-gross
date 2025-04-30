@@ -1,16 +1,17 @@
-import React from 'react'
+import React, { useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
-import { Camera, Film, Home, Library } from 'lucide-react'
+import { Camera, Film, Home, Library, Menu, X } from 'lucide-react'
 
 const Navbar = () => {
   const location = useLocation()
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
   
   const isActive = (path: string) => {
     return location.pathname === path
   }
   
   return (
-    <nav className="bg-white shadow-sm">
+    <nav className="bg-white shadow-sm sticky top-0 z-10">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex justify-between h-16">
           <div className="flex">
@@ -57,45 +58,77 @@ const Navbar = () => {
             </div>
           </div>
           <div className="hidden sm:ml-6 sm:flex sm:items-center">
+            <Link
+              to="/record"
+              className="bg-indigo-600 p-2 rounded-full text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-colors duration-200"
+            >
+              <Film className="h-5 w-5" />
+            </Link>
+          </div>
+          
+          {/* Mobile menu button */}
+          <div className="flex items-center sm:hidden">
             <button
               type="button"
-              className="bg-indigo-600 p-1 rounded-full text-white hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+              className="inline-flex items-center justify-center p-2 rounded-md text-gray-400 hover:text-gray-500 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-indigo-500"
+              aria-expanded="false"
+              onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
             >
-              <Film className="h-6 w-6" />
+              <span className="sr-only">Open main menu</span>
+              {isMobileMenuOpen ? (
+                <X className="block h-6 w-6" />
+              ) : (
+                <Menu className="block h-6 w-6" />
+              )}
             </button>
           </div>
         </div>
       </div>
       
-      {/* Mobile menu */}
-      <div className="sm:hidden border-t border-gray-200">
-        <div className="grid grid-cols-3 text-center pt-2 pb-3">
+      {/* Mobile menu, show/hide based on menu state */}
+      <div className={`${isMobileMenuOpen ? 'block' : 'hidden'} sm:hidden`}>
+        <div className="pt-2 pb-3 space-y-1">
           <Link
             to="/"
-            className={`flex flex-col items-center px-1 pt-1 text-xs font-medium ${
-              isActive('/') ? 'text-indigo-600' : 'text-gray-500 hover:text-gray-700'
+            className={`block pl-3 pr-4 py-2 border-l-4 text-base font-medium ${
+              isActive('/') 
+                ? 'border-indigo-500 text-indigo-700 bg-indigo-50' 
+                : 'border-transparent text-gray-500 hover:bg-gray-50 hover:border-gray-300 hover:text-gray-700'
             }`}
+            onClick={() => setIsMobileMenuOpen(false)}
           >
-            <Home className="h-5 w-5" />
-            Home
+            <div className="flex items-center">
+              <Home className="mr-3 h-5 w-5" />
+              Home
+            </div>
           </Link>
           <Link
             to="/record"
-            className={`flex flex-col items-center px-1 pt-1 text-xs font-medium ${
-              isActive('/record') ? 'text-indigo-600' : 'text-gray-500 hover:text-gray-700'
+            className={`block pl-3 pr-4 py-2 border-l-4 text-base font-medium ${
+              isActive('/record') 
+                ? 'border-indigo-500 text-indigo-700 bg-indigo-50' 
+                : 'border-transparent text-gray-500 hover:bg-gray-50 hover:border-gray-300 hover:text-gray-700'
             }`}
+            onClick={() => setIsMobileMenuOpen(false)}
           >
-            <Camera className="h-5 w-5" />
-            Record
+            <div className="flex items-center">
+              <Camera className="mr-3 h-5 w-5" />
+              Record
+            </div>
           </Link>
           <Link
             to="/library"
-            className={`flex flex-col items-center px-1 pt-1 text-xs font-medium ${
-              isActive('/library') ? 'text-indigo-600' : 'text-gray-500 hover:text-gray-700'
+            className={`block pl-3 pr-4 py-2 border-l-4 text-base font-medium ${
+              isActive('/library') 
+                ? 'border-indigo-500 text-indigo-700 bg-indigo-50' 
+                : 'border-transparent text-gray-500 hover:bg-gray-50 hover:border-gray-300 hover:text-gray-700'
             }`}
+            onClick={() => setIsMobileMenuOpen(false)}
           >
-            <Library className="h-5 w-5" />
-            Library
+            <div className="flex items-center">
+              <Library className="mr-3 h-5 w-5" />
+              Library
+            </div>
           </Link>
         </div>
       </div>

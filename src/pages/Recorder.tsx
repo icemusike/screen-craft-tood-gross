@@ -1,16 +1,19 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Camera, Mic, MicOff, Monitor, Video, VideoOff, X, Check, Pause, Play, Square } from 'lucide-react'
+import { Camera, Mic, MicOff, Monitor, Video, VideoOff, X, Check, Pause, Play, Square, AlertCircle, Info } from 'lucide-react'
 import Button from '../components/ui/Button'
 import { useRecordingStore } from '../store/recordingStore'
+import { useToast } from '../components/ui/Toaster'
 
 const Recorder = () => {
   const navigate = useNavigate()
   const { addRecording } = useRecordingStore()
+  const { addToast } = useToast()
   
   const [isRecording, setIsRecording] = useState(false)
   const [isPaused, setIsPaused] = useState(false)
   const [recordingTime, setRecordingTime] = useState(0)
+  const [permissionError, setPermissionError] = useState<string | null>(null)
   const [recordingOptions, setRecordingOptions] = useState({
     screen: true,
     audio: true,
@@ -45,41 +48,96 @@ const Recorder = () => {
     }
   }
   
+  // Check browser support for recording
+  useEffect(() => {
+    // Check if browser supports screen capture
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+      setPermissionError('Your browser does not support screen recording. Please use Chrome, Firefox, or Edge.')
+    }
+  }, [])
+  
   // Start recording
   const startRecording = async () => {
     try {
+      setPermissionError(null)
       chunksRef.current = []
       
-      const audioStream = recordingOptions.audio 
-        ? await navigator.mediaDevices.getUserMedia({ audio: true }) 
-        : null
-        
-      const videoStream = recordingOptions.camera 
-        ? await navigator.mediaDevices.getUserMedia({ video: true }) 
-        : null
-        
-      const screenStream = recordingOptions.screen 
-        ? await navigator.mediaDevices.getDisplayMedia({ 
-            video: { 
-              cursor: 'always',
-            },
-            audio: recordingOptions.audio,
-          }) 
-        : null
-      
-      if (!screenStream && !videoStream) {
-        throw new Error('No media sources selected')
+      // Get audio stream if enabled
+      let audioStream: MediaStream | null = null
+      if (recordingOptions.audio) {
+        try {
+          audioStream = await navigator.mediaDevices.getUserMedia({ 
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true
+            } 
+          })
+        } catch (error) {
+          console.error('Audio permission error:', error)
+          addToast('Could not access microphone. Recording without audio.', 'warning')
+        }
       }
       
-      // Combine streams if needed
-      let combinedStream: MediaStream
+      // Get camera stream if enabled
+      let videoStream: MediaStream | null = null
+      if (recordingOptions.camera) {
+        try {
+          videoStream = await navigator.mediaDevices.getUserMedia({ 
+            video: {
+              width: { ideal: 1280 },
+              height: { ideal: 720 }
+            } 
+          })
+        } catch (error) {
+          console.error('Camera permission error:', error)
+          addToast('Could not access camera. Recording without video.', 'warning')
+          setRecordingOptions(prev => ({ ...prev, camera: false }))
+        }
+      }
       
-      if (screenStream && videoStream) {
-        // For simplicity, we're just using the screen stream
-        // In a production app, you'd use a canvas to combine both streams
-        combinedStream = screenStream
-      } else {
-        combinedStream = screenStream || videoStream as MediaStream
+      // Get screen stream if enabled
+      let screenStream: MediaStream | null = null
+      if (recordingOptions.screen) {
+        try {
+          screenStream = await navigator.mediaDevices.getDisplayMedia({ 
+            video: { 
+              cursor: 'always',
+              displaySurface: 'monitor',
+            },
+            // Don't request audio here, we'll combine it separately
+            audio: false
+          })
+          
+          // Add event listener for when user stops sharing screen
+          screenStream.getVideoTracks()[0].addEventListener('ended', () => {
+            stopRecording()
+            addToast('Screen sharing ended', 'info')
+          })
+        } catch (error) {
+          console.error('Screen permission error:', error)
+          setPermissionError('Screen recording permission denied. Please allow screen sharing to record.')
+          return
+        }
+      }
+      
+      if (!screenStream && !videoStream) {
+        setPermissionError('No media sources selected or permissions denied.')
+        return
+      }
+      
+      // Combine streams
+      let combinedStream = new MediaStream()
+      
+      // Add screen or camera video tracks
+      if (screenStream) {
+        screenStream.getVideoTracks().forEach(track => {
+          combinedStream.addTrack(track)
+        })
+      } else if (videoStream) {
+        videoStream.getVideoTracks().forEach(track => {
+          combinedStream.addTrack(track)
+        })
       }
       
       // Add audio tracks if available
@@ -94,11 +152,22 @@ const Recorder = () => {
       // Display preview
       if (videoRef.current) {
         videoRef.current.srcObject = combinedStream
-        videoRef.current.muted = true
+        videoRef.current.muted = true // Prevent feedback
       }
       
-      // Create media recorder
-      const options = { mimeType: 'video/webm' }
+      // Create media recorder with fallbacks for different browser support
+      let mimeType = 'video/webm;codecs=vp9,opus'
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        mimeType = 'video/webm;codecs=vp8,opus'
+        if (!MediaRecorder.isTypeSupported(mimeType)) {
+          mimeType = 'video/webm'
+          if (!MediaRecorder.isTypeSupported(mimeType)) {
+            mimeType = ''
+          }
+        }
+      }
+      
+      const options = mimeType ? { mimeType } : undefined
       mediaRecorderRef.current = new MediaRecorder(combinedStream, options)
       
       mediaRecorderRef.current.ondataavailable = (event) => {
@@ -108,6 +177,11 @@ const Recorder = () => {
       }
       
       mediaRecorderRef.current.onstop = () => {
+        if (chunksRef.current.length === 0) {
+          addToast('No recording data available', 'error')
+          return
+        }
+        
         const blob = new Blob(chunksRef.current, { type: 'video/webm' })
         const url = URL.createObjectURL(blob)
         
@@ -126,6 +200,7 @@ const Recorder = () => {
         }
         
         addRecording(newRecording)
+        addToast('Recording saved successfully!', 'success')
         
         // Clean up
         stopTimer()
@@ -141,9 +216,10 @@ const Recorder = () => {
       mediaRecorderRef.current.start(1000) // Collect data every second
       setIsRecording(true)
       startTimer()
+      addToast('Recording started', 'info')
     } catch (error) {
       console.error('Error starting recording:', error)
-      alert('Failed to start recording. Please check permissions.')
+      setPermissionError('Failed to start recording. Please check permissions and try again.')
     }
   }
   
@@ -154,10 +230,12 @@ const Recorder = () => {
         mediaRecorderRef.current.resume()
         startTimer()
         setIsPaused(false)
+        addToast('Recording resumed', 'info')
       } else {
         mediaRecorderRef.current.pause()
         stopTimer()
         setIsPaused(true)
+        addToast('Recording paused', 'info')
       }
     }
   }
@@ -183,14 +261,18 @@ const Recorder = () => {
   // Create a thumbnail from the video
   const createThumbnail = () => {
     if (videoRef.current) {
-      const canvas = document.createElement('canvas')
-      canvas.width = videoRef.current.videoWidth
-      canvas.height = videoRef.current.videoHeight
-      const ctx = canvas.getContext('2d')
-      
-      if (ctx) {
-        ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height)
-        return canvas.toDataURL('image/jpeg')
+      try {
+        const canvas = document.createElement('canvas')
+        canvas.width = videoRef.current.videoWidth || 640
+        canvas.height = videoRef.current.videoHeight || 360
+        const ctx = canvas.getContext('2d')
+        
+        if (ctx) {
+          ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height)
+          return canvas.toDataURL('image/jpeg')
+        }
+      } catch (error) {
+        console.error('Error creating thumbnail:', error)
       }
     }
     return null
@@ -202,6 +284,24 @@ const Recorder = () => {
       ...prev,
       [option]: !prev[option]
     }))
+    
+    // If turning off screen, make sure camera is on
+    if (option === 'screen' && recordingOptions.screen) {
+      setRecordingOptions(prev => ({
+        ...prev,
+        screen: false,
+        camera: true
+      }))
+    }
+    
+    // If turning off camera and screen is off, turn on screen
+    if (option === 'camera' && recordingOptions.camera && !recordingOptions.screen) {
+      setRecordingOptions(prev => ({
+        ...prev,
+        camera: false,
+        screen: true
+      }))
+    }
   }
   
   // Clean up on unmount
@@ -216,9 +316,9 @@ const Recorder = () => {
   
   return (
     <div className="max-w-4xl mx-auto px-4 py-8">
-      <div className="bg-white rounded-lg shadow-lg overflow-hidden">
+      <div className="bg-white rounded-xl shadow-xl overflow-hidden border border-gray-100">
         {/* Video Preview */}
-        <div className="relative bg-gray-900 aspect-video flex items-center justify-center">
+        <div className="relative bg-gradient-to-r from-gray-900 to-gray-800 aspect-video flex items-center justify-center">
           {isRecording ? (
             <video 
               ref={videoRef} 
@@ -228,81 +328,103 @@ const Recorder = () => {
             />
           ) : (
             <div className="text-center p-8">
-              <Monitor className="h-16 w-16 mx-auto text-gray-400 mb-4" />
-              <h3 className="text-xl font-medium text-white">Ready to Record</h3>
-              <p className="text-gray-400 mt-2">
-                Configure your options below and click Start Recording
-              </p>
+              <div className="bg-gray-800 bg-opacity-50 p-6 rounded-xl backdrop-blur-sm">
+                <Monitor className="h-16 w-16 mx-auto text-indigo-400 mb-4" />
+                <h3 className="text-xl font-medium text-white">Ready to Record</h3>
+                <p className="text-gray-300 mt-2 max-w-md mx-auto">
+                  Configure your options below and click Start Recording
+                </p>
+              </div>
             </div>
           )}
           
           {/* Recording indicator */}
           {isRecording && (
-            <div className="absolute top-4 left-4 flex items-center bg-black bg-opacity-50 px-3 py-1 rounded-full">
-              <div className={`h-3 w-3 rounded-full mr-2 ${isPaused ? 'bg-yellow-500' : 'bg-red-500 animate-pulse'}`}></div>
+            <div className="absolute top-4 left-4 flex items-center bg-black bg-opacity-70 backdrop-blur-sm px-4 py-2 rounded-full">
+              <div className={`h-3 w-3 rounded-full mr-3 ${isPaused ? 'bg-yellow-500' : 'bg-red-500 animate-pulse'}`}></div>
               <span className="text-white text-sm font-medium">{formatTime(recordingTime)}</span>
+            </div>
+          )}
+          
+          {/* Permission error */}
+          {permissionError && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-70">
+              <div className="bg-white p-6 rounded-lg max-w-md text-center">
+                <AlertCircle className="h-12 w-12 text-red-500 mx-auto mb-4" />
+                <h3 className="text-lg font-medium text-gray-900 mb-2">Permission Error</h3>
+                <p className="text-gray-600 mb-4">{permissionError}</p>
+                <Button 
+                  onClick={() => setPermissionError(null)}
+                  variant="outline"
+                >
+                  Dismiss
+                </Button>
+              </div>
             </div>
           )}
         </div>
         
         {/* Controls */}
-        <div className="p-6">
-          <div className="flex flex-col space-y-6">
+        <div className="p-8">
+          <div className="flex flex-col space-y-8">
             {/* Recording Options */}
             {!isRecording && (
-              <div className="grid grid-cols-3 gap-4">
-                <button
-                  onClick={() => toggleOption('screen')}
-                  className={`flex flex-col items-center justify-center p-4 rounded-lg border-2 ${
-                    recordingOptions.screen 
-                      ? 'border-indigo-500 bg-indigo-50 text-indigo-700' 
-                      : 'border-gray-200 text-gray-500 hover:bg-gray-50'
-                  }`}
-                >
-                  <Monitor className="h-8 w-8 mb-2" />
-                  <span className="text-sm font-medium">Screen</span>
-                  {recordingOptions.screen && (
-                    <Check className="h-5 w-5 text-indigo-600 mt-2" />
-                  )}
-                </button>
-                
-                <button
-                  onClick={() => toggleOption('audio')}
-                  className={`flex flex-col items-center justify-center p-4 rounded-lg border-2 ${
-                    recordingOptions.audio 
-                      ? 'border-indigo-500 bg-indigo-50 text-indigo-700' 
-                      : 'border-gray-200 text-gray-500 hover:bg-gray-50'
-                  }`}
-                >
-                  {recordingOptions.audio ? (
-                    <Mic className="h-8 w-8 mb-2" />
-                  ) : (
-                    <MicOff className="h-8 w-8 mb-2" />
-                  )}
-                  <span className="text-sm font-medium">Audio</span>
-                  {recordingOptions.audio && (
-                    <Check className="h-5 w-5 text-indigo-600 mt-2" />
-                  )}
-                </button>
-                
-                <button
-                  onClick={() => toggleOption('camera')}
-                  className={`flex flex-col items-center justify-center p-4 rounded-lg border-2 ${
-                    recordingOptions.camera 
-                      ? 'border-indigo-500 bg-indigo-50 text-indigo-700' 
-                      : 'border-gray-200 text-gray-500 hover:bg-gray-50'
-                  }`}
-                >
-                  {recordingOptions.camera ? (
-                    <Video className="h-8 w-8 mb-2" />
-                  ) : (
-                    <VideoOff className="h-8 w-8 mb-2" />
-                  )}
-                  <span className="text-sm font-medium">Camera</span>
-                  {recordingOptions.camera && (
-                    <Check className="h-5 w-5 text-indigo-600 mt-2" />
-                  )}
-                </button>
+              <div>
+                <h3 className="text-lg font-medium text-gray-900 mb-4">Recording Options</h3>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <button
+                    onClick={() => toggleOption('screen')}
+                    className={`flex flex-col items-center justify-center p-6 rounded-xl border-2 transition-all duration-200 ${
+                      recordingOptions.screen 
+                        ? 'border-indigo-500 bg-indigo-50 text-indigo-700 shadow-md' 
+                        : 'border-gray-200 text-gray-500 hover:bg-gray-50'
+                    }`}
+                  >
+                    <Monitor className="h-10 w-10 mb-3" />
+                    <span className="text-sm font-medium">Screen</span>
+                    {recordingOptions.screen && (
+                      <Check className="h-5 w-5 text-indigo-600 mt-3" />
+                    )}
+                  </button>
+                  
+                  <button
+                    onClick={() => toggleOption('audio')}
+                    className={`flex flex-col items-center justify-center p-6 rounded-xl border-2 transition-all duration-200 ${
+                      recordingOptions.audio 
+                        ? 'border-indigo-500 bg-indigo-50 text-indigo-700 shadow-md' 
+                        : 'border-gray-200 text-gray-500 hover:bg-gray-50'
+                    }`}
+                  >
+                    {recordingOptions.audio ? (
+                      <Mic className="h-10 w-10 mb-3" />
+                    ) : (
+                      <MicOff className="h-10 w-10 mb-3" />
+                    )}
+                    <span className="text-sm font-medium">Audio</span>
+                    {recordingOptions.audio && (
+                      <Check className="h-5 w-5 text-indigo-600 mt-3" />
+                    )}
+                  </button>
+                  
+                  <button
+                    onClick={() => toggleOption('camera')}
+                    className={`flex flex-col items-center justify-center p-6 rounded-xl border-2 transition-all duration-200 ${
+                      recordingOptions.camera 
+                        ? 'border-indigo-500 bg-indigo-50 text-indigo-700 shadow-md' 
+                        : 'border-gray-200 text-gray-500 hover:bg-gray-50'
+                    }`}
+                  >
+                    {recordingOptions.camera ? (
+                      <Video className="h-10 w-10 mb-3" />
+                    ) : (
+                      <VideoOff className="h-10 w-10 mb-3" />
+                    )}
+                    <span className="text-sm font-medium">Camera</span>
+                    {recordingOptions.camera && (
+                      <Check className="h-5 w-5 text-indigo-600 mt-3" />
+                    )}
+                  </button>
+                </div>
               </div>
             )}
             
@@ -312,9 +434,10 @@ const Recorder = () => {
                 <Button 
                   onClick={startRecording}
                   size="lg"
+                  className="px-8 py-4 text-lg shadow-lg hover:shadow-xl transition-all duration-200 bg-gradient-to-r from-indigo-600 to-indigo-700"
                   disabled={!recordingOptions.screen && !recordingOptions.camera}
                 >
-                  <Camera className="mr-2 h-5 w-5" />
+                  <Camera className="mr-3 h-6 w-6" />
                   Start Recording
                 </Button>
               ) : (
@@ -323,6 +446,7 @@ const Recorder = () => {
                     onClick={pauseRecording}
                     variant="outline"
                     size="lg"
+                    className="px-6 py-3 border-2"
                   >
                     {isPaused ? (
                       <>
@@ -341,6 +465,7 @@ const Recorder = () => {
                     onClick={stopRecording}
                     variant="danger"
                     size="lg"
+                    className="px-6 py-3 bg-gradient-to-r from-red-600 to-red-700 shadow-lg hover:shadow-xl transition-all duration-200"
                   >
                     <Square className="mr-2 h-5 w-5" />
                     Stop
@@ -354,26 +479,35 @@ const Recorder = () => {
       
       {/* Instructions */}
       {!isRecording && (
-        <div className="mt-8 bg-blue-50 border border-blue-200 rounded-lg p-4">
-          <h3 className="text-lg font-medium text-blue-800 mb-2">Tips for recording</h3>
-          <ul className="text-blue-700 space-y-2">
-            <li className="flex items-start">
-              <Check className="h-5 w-5 mr-2 text-blue-500 flex-shrink-0 mt-0.5" />
-              <span>Close unnecessary applications before recording</span>
-            </li>
-            <li className="flex items-start">
-              <Check className="h-5 w-5 mr-2 text-blue-500 flex-shrink-0 mt-0.5" />
-              <span>Use a good microphone for better audio quality</span>
-            </li>
-            <li className="flex items-start">
-              <Check className="h-5 w-5 mr-2 text-blue-500 flex-shrink-0 mt-0.5" />
-              <span>Ensure good lighting if using camera</span>
-            </li>
-            <li className="flex items-start">
-              <Check className="h-5 w-5 mr-2 text-blue-500 flex-shrink-0 mt-0.5" />
-              <span>After recording, you can edit and enhance your video with our AI tools</span>
-            </li>
-          </ul>
+        <div className="mt-8 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-100 rounded-xl p-6 shadow-sm">
+          <div className="flex items-start">
+            <Info className="h-6 w-6 text-blue-500 mr-4 mt-1 flex-shrink-0" />
+            <div>
+              <h3 className="text-lg font-medium text-blue-800 mb-3">Tips for professional recordings</h3>
+              <ul className="text-blue-700 space-y-3">
+                <li className="flex items-start">
+                  <Check className="h-5 w-5 mr-3 text-blue-500 flex-shrink-0 mt-0.5" />
+                  <span>Close unnecessary applications and browser tabs before recording</span>
+                </li>
+                <li className="flex items-start">
+                  <Check className="h-5 w-5 mr-3 text-blue-500 flex-shrink-0 mt-0.5" />
+                  <span>Use a good microphone for better audio quality and speak clearly</span>
+                </li>
+                <li className="flex items-start">
+                  <Check className="h-5 w-5 mr-3 text-blue-500 flex-shrink-0 mt-0.5" />
+                  <span>Ensure good lighting if using camera and position yourself properly</span>
+                </li>
+                <li className="flex items-start">
+                  <Check className="h-5 w-5 mr-3 text-blue-500 flex-shrink-0 mt-0.5" />
+                  <span>After recording, you can edit and enhance your video with our AI tools</span>
+                </li>
+                <li className="flex items-start">
+                  <Check className="h-5 w-5 mr-3 text-blue-500 flex-shrink-0 mt-0.5" />
+                  <span>For longer recordings, consider breaking content into smaller segments</span>
+                </li>
+              </ul>
+            </div>
+          </div>
         </div>
       )}
     </div>
